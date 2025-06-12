@@ -856,7 +856,6 @@ const Workspace = struct {
 fn addWorkspace(server: *Server, uri: Uri) error{OutOfMemory}!void {
     try server.workspaces.ensureUnusedCapacity(server.allocator, 1);
     server.workspaces.appendAssumeCapacity(try Workspace.init(server, uri));
-    log.info("added Workspace Folder: {s}", .{uri.raw});
 
     if (BuildOnSaveSupport.isSupportedComptime() and
         // Don't initialize build on save until initialization finished.
@@ -869,6 +868,16 @@ fn addWorkspace(server: *Server, uri: Uri) error{OutOfMemory}!void {
             .restart = false,
         });
     }
+
+    const file_count = server.document_store.loadDirectoryRecursive(uri) catch |err| switch (err) {
+        error.UnsupportedScheme => return,
+        else => {
+            log.err("failed to load files in workspace '{s}': {}", .{ uri.raw, err });
+            return;
+        },
+    };
+
+    log.info("added Workspace Folder: {s} ({d} files)", .{ uri.raw, file_count });
 }
 
 fn removeWorkspace(server: *Server, uri: Uri) void {
@@ -1567,54 +1576,47 @@ fn selectionRangeHandler(server: *Server, arena: std.mem.Allocator, request: typ
 fn workspaceSymbolHandler(server: *Server, arena: std.mem.Allocator, request: types.workspace.Symbol.Params) Error!lsp.ResultType("workspace/symbol") {
     if (request.query.len < 3) return null;
 
-    for (server.workspaces.items) |workspace| {
-        const path = workspace.uri.toFsPath(arena) catch |err| switch (err) {
-            error.UnsupportedScheme => return null, // https://github.com/microsoft/language-server-protocol/issues/1264
-            error.OutOfMemory => return error.OutOfMemory,
-        };
-        var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return error.InternalError;
-        defer dir.close();
-
-        var walker = try dir.walk(arena);
-        defer walker.deinit();
-
-        while (walker.next() catch return error.InternalError) |entry| {
-            if (std.mem.eql(u8, std.fs.path.extension(entry.basename), ".zig")) {
-                const uri = Uri.fromPath(
-                    arena,
-                    std.fs.path.join(arena, &.{ path, entry.path }) catch return error.InternalError,
-                ) catch return error.InternalError;
-
-                server.document_store.trigramIndexUri(
-                    uri,
-                    server.offset_encoding,
-                ) catch return error.InternalError;
-            }
-        }
-    }
+    const handles = try server.document_store.loadTrigramStores();
+    defer server.document_store.allocator.free(handles);
 
     var symbols: std.ArrayListUnmanaged(types.workspace.Symbol) = .empty;
     var declaration_buffer: std.ArrayListUnmanaged(TrigramStore.Declaration.Index) = .empty;
+    var loc_buffer: std.ArrayListUnmanaged(offsets.Loc) = .empty;
+    var range_buffer: std.ArrayListUnmanaged(offsets.Range) = .empty;
 
-    for (
-        server.document_store.trigram_stores.keys(),
-        server.document_store.trigram_stores.values(),
-    ) |uri, trigram_store| {
+    for (handles) |handle| {
+        const trigram_store = handle.getTrigramStoreCached();
+
+        declaration_buffer.clearRetainingCapacity();
         try trigram_store.declarationsForQuery(arena, request.query, &declaration_buffer);
 
         const slice = trigram_store.declarations.slice();
         const names = slice.items(.name);
-        const ranges = slice.items(.range);
+        const locs = slice.items(.loc);
 
-        for (declaration_buffer.items) |declaration| {
+        {
+            // Convert `offsets.Loc` to `offsets.Range`
+
+            try loc_buffer.resize(arena, declaration_buffer.items.len);
+            try range_buffer.resize(arena, declaration_buffer.items.len);
+
+            for (declaration_buffer.items, loc_buffer.items) |declaration, *loc| {
+                const small_loc = locs[@intFromEnum(declaration)];
+                loc.* = .{ .start = small_loc.start, .end = small_loc.end };
+            }
+
+            try offsets.multiple.locToRange(arena, handle.tree.source, loc_buffer.items, range_buffer.items, server.offset_encoding);
+        }
+
+        try symbols.ensureUnusedCapacity(arena, declaration_buffer.items.len);
+        for (declaration_buffer.items, range_buffer.items) |declaration, range| {
             const name = names[@intFromEnum(declaration)];
-            const range = ranges[@intFromEnum(declaration)];
-            try symbols.append(arena, .{
+            symbols.appendAssumeCapacity(.{
                 .name = trigram_store.names.items[name.start..name.end],
                 .kind = .Variable,
                 .location = .{
                     .location = .{
-                        .uri = uri.raw,
+                        .uri = handle.uri.raw,
                         .range = range,
                     },
                 },
