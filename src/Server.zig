@@ -34,7 +34,6 @@ const goto = @import("features/goto.zig");
 const hover_handler = @import("features/hover.zig");
 const selection_range = @import("features/selection_range.zig");
 const diagnostics_gen = @import("features/diagnostics.zig");
-const TrigramStore = @import("TrigramStore.zig");
 
 const BuildOnSave = diagnostics_gen.BuildOnSave;
 const BuildOnSaveSupport = build_runner_shared.BuildOnSaveSupport;
@@ -1574,57 +1573,7 @@ fn selectionRangeHandler(server: *Server, arena: std.mem.Allocator, request: typ
 }
 
 fn workspaceSymbolHandler(server: *Server, arena: std.mem.Allocator, request: types.workspace.Symbol.Params) Error!lsp.ResultType("workspace/symbol") {
-    if (request.query.len < 3) return null;
-
-    const handles = try server.document_store.loadTrigramStores();
-    defer server.document_store.allocator.free(handles);
-
-    var symbols: std.ArrayListUnmanaged(types.workspace.Symbol) = .empty;
-    var declaration_buffer: std.ArrayListUnmanaged(TrigramStore.Declaration.Index) = .empty;
-    var loc_buffer: std.ArrayListUnmanaged(offsets.Loc) = .empty;
-    var range_buffer: std.ArrayListUnmanaged(offsets.Range) = .empty;
-
-    for (handles) |handle| {
-        const trigram_store = handle.getTrigramStoreCached();
-
-        declaration_buffer.clearRetainingCapacity();
-        try trigram_store.declarationsForQuery(arena, request.query, &declaration_buffer);
-
-        const slice = trigram_store.declarations.slice();
-        const names = slice.items(.name);
-        const locs = slice.items(.loc);
-
-        {
-            // Convert `offsets.Loc` to `offsets.Range`
-
-            try loc_buffer.resize(arena, declaration_buffer.items.len);
-            try range_buffer.resize(arena, declaration_buffer.items.len);
-
-            for (declaration_buffer.items, loc_buffer.items) |declaration, *loc| {
-                const small_loc = locs[@intFromEnum(declaration)];
-                loc.* = .{ .start = small_loc.start, .end = small_loc.end };
-            }
-
-            try offsets.multiple.locToRange(arena, handle.tree.source, loc_buffer.items, range_buffer.items, server.offset_encoding);
-        }
-
-        try symbols.ensureUnusedCapacity(arena, declaration_buffer.items.len);
-        for (declaration_buffer.items, range_buffer.items) |declaration, range| {
-            const name = names[@intFromEnum(declaration)];
-            symbols.appendAssumeCapacity(.{
-                .name = trigram_store.names.items[name.start..name.end],
-                .kind = .Variable,
-                .location = .{
-                    .location = .{
-                        .uri = handle.uri.raw,
-                        .range = range,
-                    },
-                },
-            });
-        }
-    }
-
-    return .{ .workspace_symbols = symbols.items };
+    return try @import("features/workspace_symbols.zig").handler(server, arena, request);
 }
 
 const HandledRequestParams = union(enum) {
