@@ -13,13 +13,13 @@ test "workspace symbols" {
 
     try ctx.addWorkspace("Animal Shelter", "/animal_shelter/");
 
-    _ = try ctx.addDocument(.{ .source = 
+    _ = try ctx.addDocument(.{ .source =
         \\const SalamanderCrab = struct {
         \\    fn salamander_crab() void {}
         \\};
     , .base_directory = "/animal_shelter/" });
 
-    _ = try ctx.addDocument(.{ .source = 
+    _ = try ctx.addDocument(.{ .source =
         \\const Dog = struct {
         \\    const sheltie: Dog = .{};
         \\    var @"Mr Crabs" = @compileError("hold up");
@@ -30,7 +30,7 @@ test "workspace symbols" {
         \\}
     , .base_directory = "/animal_shelter/" });
 
-    _ = try ctx.addDocument(.{ .source = 
+    _ = try ctx.addDocument(.{ .source =
         \\const Lion = struct {
         \\    extern fn evolveToMonke() void;
         \\    fn roar() void {
@@ -42,7 +42,7 @@ test "workspace symbols" {
         \\};
     , .base_directory = "/animal_shelter/" });
 
-    _ = try ctx.addDocument(.{ .source = 
+    _ = try ctx.addDocument(.{ .source =
         \\const PotatoDoctor = struct {};
     , .base_directory = "/farm/" });
 
